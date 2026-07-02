@@ -1,0 +1,14 @@
+{
+  "name": "relay-working-mvp",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @relay/api\" \"npm run dev -w @relay/worker\" \"npm run dev -w @relay/web\"",
+    "prisma:generate": "npm run prisma:generate -w @relay/db",
+    "prisma:migrate": "npm run prisma:migrate -w @relay/db",
+    "seed": "npm run seed -w @relay/db"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
+}

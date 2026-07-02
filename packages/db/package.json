@@ -1,0 +1,11 @@
+{
+  "name": "@relay/db",
+  "private": true,
+  "scripts": {
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev --name init",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": { "@prisma/client": "^5.19.1", "bcryptjs": "^2.4.3" },
+  "devDependencies": { "prisma": "^5.19.1", "tsx": "^4.19.1" }
+}
