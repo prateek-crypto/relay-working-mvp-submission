@@ -1,82 +1,433 @@
-# Relay — Distributed Job Scheduler (Node.js MVP)
+# Relay - Distributed Job Scheduler
 
-Relay is a distributed background job scheduler built in **Node.js + TypeScript** to explore reliable asynchronous job execution using **PostgreSQL row-level locking**.
+This is my internship project on a **distributed job scheduler / background job processing system** built using **Node.js, TypeScript, PostgreSQL, Prisma and React**.
 
-This MVP intentionally focuses on the core engineering problems of a job scheduler instead of trying to mimic a full production platform.
+The main idea of this project is to understand how background jobs work in real systems.  
+Instead of doing everything directly in the API request, some tasks can be pushed into a queue and handled by a worker in the background.
 
----
+Examples:
+- sending an email
+- generating a report
+- retrying failed work
+- storing failed jobs in dead-letter queue
 
-## 1) What the MVP implements
-
-### Backend
-- demo login with JWT
-- project and queue listing
-- immediate job creation
-- queue pause / resume
-- worker polling and worker heartbeat updates
-- atomic job claiming with `FOR UPDATE SKIP LOCKED`
-- mocked job execution handlers
-- retry on failure using retry policy
-- dead-letter movement after max attempts
-- manual retry and dead-letter requeue endpoints
-- job execution history endpoint
-
-### Frontend
-- queue overview cards
-- jobs table
-- workers table
-- dead-letter table with requeue action
-- create demo jobs from dashboard
-
-### Demo job types
-- `send-email`
-- `generate-report`
-- `fail-demo`
+This project is a **working MVP**, mainly focused on backend logic and job flow.  
+Frontend is kept simple and only used to see queues, jobs, workers and dead-letter jobs.
 
 ---
 
-## 2) Why PostgreSQL `FOR UPDATE SKIP LOCKED` was chosen
+# What this project does
 
-The hardest problem in a distributed worker system is preventing duplicate execution when multiple workers poll the same queue at the same time.
+This project has 3 parts:
 
-Relay solves this by claiming jobs inside a single PostgreSQL transaction:
+## 1. API
+The API is used to:
+- login
+- create jobs
+- get queues
+- get jobs of a queue
+- pause / resume queues
+- get queue stats
+- get workers
+- get dead-letter jobs
+- requeue dead-letter jobs
 
-1. select eligible queued jobs ordered by priority and age
-2. lock them using `FOR UPDATE SKIP LOCKED`
-3. update them to `CLAIMED` with a lease owner and lease expiry
-4. commit the transaction
+## 2. Worker
+The worker runs in the background and:
+- polls queues
+- picks queued jobs
+- executes them
+- retries failed jobs
+- moves failed jobs to dead-letter if retry limit is crossed
 
-This gives the MVP a concurrency mechanism that is much closer to a real scheduler than a naive polling loop.
+## 3. Frontend dashboard
+The frontend is a simple dashboard where I can:
+- see all queues
+- create demo jobs
+- see jobs and their status
+- see active workers
+- see dead-letter jobs
+- requeue failed jobs
 
 ---
 
-## 3) What was intentionally left out
+# Why I built this
 
-To keep the submission believable and finishable as an internship project, the following features were intentionally deferred:
+I wanted to build something beyond a normal CRUD project and understand how backend systems handle **asynchronous tasks**.
 
-- queue sharding
-- Kafka / event-driven execution
-- workflow DAG dependencies
-- WebSocket live updates
-- advanced RBAC
-- AI-generated failure summaries
+In many applications, some work should not happen directly during the API request.  
+For example:
+- email sending
+- report generation
+- notification processing
+- retrying failed operations
 
-These are good future extensions, but they are not necessary to demonstrate the scheduler core.
+So I built this project to learn:
+- how job queues work
+- how workers process jobs
+- how retries are handled
+- how dead-letter queues work
+- how queue state can be monitored
 
 ---
 
-## Local run
+# Features implemented
 
-```bash
-cp .env.example .env
-docker compose up -d
+## Queue and job handling
+- create jobs inside a queue
+- support multiple queues
+- store job payload and metadata
+- keep job status in database
+
+## Worker processing
+- worker registration in database
+- worker heartbeat
+- polling active queues
+- claiming jobs
+- executing jobs based on job type
+
+## Retry logic
+- failed jobs are retried based on retry policy
+- next retry time is stored using `availableAt`
+
+## Dead-letter queue
+- if max retry attempts are reached, job moves to dead-letter
+- failure reason is stored
+
+## Dead-letter requeue
+- failed jobs can be requeued again from API / dashboard
+
+## Queue controls
+- queue can be paused
+- queue can be resumed
+- paused queue jobs remain queued until resumed
+
+## Monitoring
+- queue stats
+- job list
+- worker list
+- dead-letter list
+
+---
+
+# Job types used in this project
+
+For demo/testing, I used these job types:
+
+## `send-email`
+A demo email job.
+
+## `generate-report`
+A demo report generation job.
+
+## `fail-demo`
+A job that intentionally fails so retry and dead-letter flow can be tested.
+
+---
+
+# Tech stack
+
+## Backend
+- Node.js
+- TypeScript
+- Express.js
+- Prisma
+- PostgreSQL
+- JWT authentication
+- Zod validation
+
+## Frontend
+- React
+- Vite
+
+## Other tools
+- npm workspaces
+- Prisma Studio
+- Postman
+
+---
+
+# Project structure
+
+```txt
+relay-working-mvp-submission/
+│
+├── apps/
+│   ├── api/         # backend API
+│   ├── worker/      # background worker
+│   └── web/         # frontend dashboard
+│
+├── packages/
+│   ├── db/          # prisma schema, migrations, seed, db client
+│   ├── config/      # env config
+│   └── shared/      # shared helpers and retry logic
+│
+├── package.json
+└── README.md
+Job flow in this project
+
+A job usually goes through the following states:
+
+1. QUEUED
+
+Job is created and waiting in queue.
+
+2. CLAIMED
+
+Worker has picked the job.
+
+3. RUNNING
+
+Worker is currently executing it.
+
+4. COMPLETED
+
+Job finished successfully.
+
+5. DEAD_LETTER
+
+Job failed multiple times and has been moved to dead-letter queue.
+
+High level working
+A job is created from API or frontend.
+Job is stored in database with status QUEUED.
+Worker keeps polling active queues.
+Worker claims a job and marks it CLAIMED / RUNNING.
+Worker runs the correct handler depending on job type.
+If success -> job becomes COMPLETED
+If failure:
+retry if attempts are left
+otherwise move to DEAD_LETTER
+Simple architecture
+Basic ER relation idea
+One Project can have many Queues
+One Queue can have many Jobs
+One Queue can use one RetryPolicy
+One Job can have many JobExecutions
+One Job can move to DeadLetterJob
+One Worker can execute many jobs
+API routes used
+Auth
+POST /api/v1/auth/login
+Projects / queues
+GET /api/v1/projects
+GET /api/v1/projects/:projectId/queues
+Jobs
+POST /api/v1/queues/:queueId/jobs
+GET /api/v1/queues/:queueId/jobs
+Queue actions
+GET /api/v1/queues/:queueId/stats
+POST /api/v1/queues/:queueId/pause
+POST /api/v1/queues/:queueId/resume
+Workers
+GET /api/v1/workers
+Dead-letter
+GET /api/v1/dead-letter
+POST /api/v1/dead-letter/:deadLetterId/requeue
+How to run locally
+1. Clone the project
+git clone <your-repo-url>
+cd relay-working-mvp-submission
+2. Install dependencies
 npm install
-npm run prisma:generate
-npm run prisma:migrate
-npm run seed
-npm run dev
-```
+3. Add .env
 
-### Demo credentials
-- `demo@relay.dev`
-- `password123`
+Create a root .env file like this:
+
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/relay?schema=public"
+JWT_SECRET="change-this-secret"
+JWT_EXPIRES_IN="7d"
+API_PORT=4000
+NODE_ENV=development
+
+WORKER_NAME="worker-1"
+WORKER_POLL_INTERVAL_MS=3000
+WORKER_HEARTBEAT_INTERVAL_MS=8000
+WORKER_CLAIM_BATCH_SIZE=5
+WORKER_LEASE_SECONDS=30
+
+VITE_API_BASE_URL="http://localhost:4000/api/v1"
+Database setup
+Generate Prisma client
+npm run prisma:generate
+Run migration
+npm run prisma:migrate
+Seed data
+npm run seed
+
+This creates demo data like:
+
+demo user
+demo project
+demo queues
+retry policy
+Run the project
+Start API
+npm run dev:api
+Start worker
+npm run dev:worker
+Start frontend
+npm run dev:web
+Start all together
+npm run dev
+Demo flows tested
+
+I tested these flows in the project:
+
+1. Login
+logged in with demo user
+got JWT token
+used token in protected routes
+2. Send-email job
+created send-email job
+worker picked it
+job completed successfully
+3. Generate-report job
+created generate-report job
+worker processed it successfully
+4. Fail-demo retry flow
+created fail-demo job
+worker retried it
+after max attempts it moved to dead-letter
+5. Dead-letter requeue
+requeued a dead-letter job
+worker picked it again
+6. Pause / resume queue
+paused queue
+created job while paused
+job stayed queued
+resumed queue
+worker processed it after resume
+
+Recommended way to run during testing
+
+Open 3 terminals in the project root.
+1)**.npm run dev:api
+2).npm run dev:worker
+3).npm run dev:web**
+
+This makes it easier to see:
+API logs
+worker logs
+frontend separately
+API runs on **http://localhost:4000**
+**for running all together 
+# npm run dev**
+First start PostgreSQL
+
+Your whole project depends on the database.
+
+Make sure PostgreSQL is running and that the database relay exists.
+
+Your .env currently uses:
+
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/relay?schema=public"
+
+So the required DB is:
+
+database name → relay
+user → postgres
+password → postgres
+2) Install dependencies once
+
+If not already done:
+
+npm install
+
+You only need this when setting up the project or after dependency changes.
+
+3) Make sure .env exists in project root
+
+Root .env should contain:
+
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/relay?schema=public"
+JWT_SECRET="change-this-secret"
+JWT_EXPIRES_IN="7d"
+API_PORT=4000
+NODE_ENV=development
+WORKER_NAME="worker-1"
+WORKER_POLL_INTERVAL_MS=3000
+WORKER_HEARTBEAT_INTERVAL_MS=8000
+WORKER_CLAIM_BATCH_SIZE=5
+WORKER_LEASE_SECONDS=30
+VITE_API_BASE_URL="http://localhost:4000/api/v1"
+4) Generate Prisma client
+
+Run once after fresh setup or schema changes:
+
+npm run prisma:generate
+5) Run database migration
+
+If DB is fresh / not set up yet:
+
+npm run prisma:migrate
+6) Seed the database
+
+This creates demo user, project, queues, retry policy etc.
+
+npm run seed
+7) Now start the actual project
+
+Your project has 3 running parts:
+
+API
+Worker
+Frontend
+Recommended way: 3 separate terminals
+Terminal 1 — Start API
+
+Open a new PowerShell window:
+
+cd "C:\Users\LENOVO\OneDrive\Desktop\relay-working-mvp-submission"
+npm run dev:api
+
+This starts the backend API on port 4000.
+
+Terminal 2 — Start Worker
+
+Open another PowerShell window:
+
+cd "C:\Users\LENOVO\OneDrive\Desktop\relay-working-mvp-submission"
+npm run dev:worker
+
+This starts the background worker that processes jobs.
+
+When it works, you’ll see logs like:
+
+[worker] started: worker-1
+[worker] claimed 1 job(s) ...
+[worker] executing job ...
+[worker] job completed ...
+Terminal 3 — Start Frontend
+
+Open another PowerShell window:
+
+cd "C:\Users\LENOVO\OneDrive\Desktop\relay-working-mvp-submission"
+npm run dev:web
+
+This starts the React dashboard, usually on:
+
+http://localhost:5173
+8) Login and use project
+
+Once API + Worker + Web are all running:
+
+Open frontend in browser
+
+Usually:
+
+http://localhost:5173
+Then login using seeded demo credentials
+
+Use the demo account you seeded earlier.
+
+After login you can:
+
+view queues
+create send-email job
+create generate-report job
+create fail-demo job
+see workers
+see dead-letter jobs
+pause/resume queue
+requeue dead-letter jobs

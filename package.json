@@ -2,22 +2,25 @@
   "$schema": "https://json.schemastore.org/package",
   "name": "relay-working-mvp",
   "private": true,
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w @relay/api\" \"npm run dev -w @relay/worker\" \"npm run dev -w @relay/web\"",
     "dev:api": "npm run dev -w @relay/api",
     "dev:worker": "npm run dev -w @relay/worker",
     "dev:web": "npm run dev -w @relay/web",
-
     "prisma:generate": "npm --workspace @relay/db run prisma:generate",
     "prisma:migrate": "npm --workspace @relay/db run prisma:migrate",
     "seed": "npm --workspace @relay/db run seed",
-
     "build": "npm run build -ws --if-present",
     "lint": "npm run lint -ws --if-present",
     "test": "npm run test -ws --if-present"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^26.1.0",
     "concurrently": "^9.0.1"
   }
 }
