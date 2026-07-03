@@ -416,7 +416,9 @@ Open frontend in browser
 
 Usually:
 
+```
 http://localhost:5173
+```
 Then login using seeded demo credentials
 
 Use the demo account you seeded earlier.
@@ -431,3 +433,130 @@ see workers
 see dead-letter jobs
 pause/resume queue
 requeue dead-letter jobs
+
+
+
+
+```
+# ## Architecture Diagram
+```
+
+```mermaid
+flowchart TB
+    user[User / Admin]
+    web[Web Dashboard<br/>React + Vite]
+    api[API Service<br/>Node.js + Express + TypeScript]
+    worker[Worker Service<br/>Background Job Processor]
+    db[(PostgreSQL)]
+    prisma[Prisma ORM]
+
+    user --> web
+    web -->|Login, create jobs, pause/resume queues,<br/>view stats, workers, dead-letter jobs| api
+
+    api --> prisma
+    worker --> prisma
+    prisma --> db
+
+    api -->|Create job| db
+    api -->|Read queues / jobs / stats| db
+    api -->|Pause / resume queue| db
+    api -->|Requeue dead-letter job| db
+
+    worker -->|Poll active queues| db
+    worker -->|Claim queued jobs| db
+    worker -->|Execute send-email / generate-report / fail-demo| db
+    worker -->|Retry failed jobs| db
+    worker -->|Move exhausted jobs to dead-letter| db
+    worker -->|Heartbeat update| db
+
+
+
+
+```
+  #   ErDiagram
+```
+
+
+
+
+    PROJECT ||--o{ QUEUE : contains
+    RETRY_POLICY ||--o{ QUEUE : applied_to
+    QUEUE ||--o{ JOB : stores
+    WORKER ||--o{ JOB : claims
+    JOB ||--o{ JOB_EXECUTION : creates
+    WORKER ||--o{ JOB_EXECUTION : runs
+    JOB ||--o| DEAD_LETTER_JOB : becomes
+
+    PROJECT {
+        uuid id PK
+        string name
+        string slug
+        datetime createdAt
+    }
+
+    RETRY_POLICY {
+        uuid id PK
+        string name
+        string strategy
+        int maxAttempts
+        int baseDelayMs
+        datetime createdAt
+    }
+
+    QUEUE {
+        uuid id PK
+        uuid projectId FK
+        string name
+        boolean isPaused
+        int defaultPriority
+        int concurrencyLimit
+        uuid retryPolicyId FK
+        datetime createdAt
+    }
+
+    JOB {
+        uuid id PK
+        uuid queueId FK
+        string jobType
+        json payloadJson
+        string status
+        int priority
+        int attemptCount
+        int maxAttempts
+        datetime availableAt
+        uuid claimedByWorkerId FK
+        datetime claimedAt
+        datetime leaseExpiresAt
+        datetime completedAt
+        string lastError
+        datetime createdAt
+    }
+
+    WORKER {
+        uuid id PK
+        string workerName
+        string status
+        datetime lastHeartbeatAt
+        datetime createdAt
+    }
+
+    JOB_EXECUTION {
+        uuid id PK
+        uuid jobId FK
+        uuid workerId FK
+        int attemptNumber
+        string status
+        datetime startedAt
+        datetime finishedAt
+        string errorMessage
+        datetime createdAt
+    }
+
+    DEAD_LETTER_JOB {
+        uuid id PK
+        uuid jobId FK
+        string failureReason
+        int finalAttempt
+        string failureSummary
+        datetime createdAt
+    }
