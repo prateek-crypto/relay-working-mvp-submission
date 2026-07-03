@@ -2,29 +2,49 @@
 
 This is my internship project on a **distributed job scheduler / background job processing system** built using **Node.js, TypeScript, PostgreSQL, Prisma and React**.
 
-The main idea of this project is to understand how background jobs work in real systems.  
-Instead of doing everything directly in the API request, some tasks can be pushed into a queue and handled by a worker in the background.
+The main goal of this project was to understand how background jobs work in real backend systems.  
+Instead of doing everything inside a normal API request, some tasks can be pushed into a queue and processed later by a worker in the background.
 
-Examples:
-- sending an email
-- generating a report
+Examples of such tasks:
+- sending emails
+- generating reports
+- retrying failed operations
+- moving failed jobs to a dead-letter queue
+
+This project is a **working MVP** mainly focused on backend job flow, queue handling and worker processing.  
+The frontend is kept simple and is only used for viewing queues, jobs, workers and dead-letter jobs.
+
+---
+
+# Why I built this
+
+I wanted to build something beyond a normal CRUD project and understand how backend systems handle **asynchronous work**.
+
+In many real applications, some tasks should not be processed directly inside the API request because they can be slow or may fail independently.  
+For example:
+- email sending
+- report generation
+- notifications
 - retrying failed work
-- storing failed jobs in dead-letter queue
 
-This project is a **working MVP**, mainly focused on backend logic and job flow.  
-Frontend is kept simple and only used to see queues, jobs, workers and dead-letter jobs.
+So I built this project to learn:
+- how job queues work
+- how workers process jobs in the background
+- how retries are handled
+- how dead-letter queues work
+- how queue state can be monitored
 
 ---
 
 # What this project does
 
-This project has 3 parts:
+This project has 3 main parts:
 
 ## 1. API
 The API is used to:
 - login
 - create jobs
-- get queues
+- get projects and queues
 - get jobs of a queue
 - pause / resume queues
 - get queue stats
@@ -38,36 +58,16 @@ The worker runs in the background and:
 - picks queued jobs
 - executes them
 - retries failed jobs
-- moves failed jobs to dead-letter if retry limit is crossed
+- moves failed jobs to dead-letter when retry limit is crossed
 
 ## 3. Frontend dashboard
-The frontend is a simple dashboard where I can:
-- see all queues
+The frontend dashboard is simple and is used to:
+- view queues
 - create demo jobs
 - see jobs and their status
 - see active workers
 - see dead-letter jobs
 - requeue failed jobs
-
----
-
-# Why I built this
-
-I wanted to build something beyond a normal CRUD project and understand how backend systems handle **asynchronous tasks**.
-
-In many applications, some work should not happen directly during the API request.  
-For example:
-- email sending
-- report generation
-- notification processing
-- retrying failed operations
-
-So I built this project to learn:
-- how job queues work
-- how workers process jobs
-- how retries are handled
-- how dead-letter queues work
-- how queue state can be monitored
 
 ---
 
@@ -77,7 +77,7 @@ So I built this project to learn:
 - create jobs inside a queue
 - support multiple queues
 - store job payload and metadata
-- keep job status in database
+- keep job status in the database
 
 ## Worker processing
 - worker registration in database
@@ -91,8 +91,8 @@ So I built this project to learn:
 - next retry time is stored using `availableAt`
 
 ## Dead-letter queue
-- if max retry attempts are reached, job moves to dead-letter
-- failure reason is stored
+- if max retry attempts are reached, the job moves to dead-letter
+- failure reason is stored for debugging
 
 ## Dead-letter requeue
 - failed jobs can be requeued again from API / dashboard
@@ -100,7 +100,7 @@ So I built this project to learn:
 ## Queue controls
 - queue can be paused
 - queue can be resumed
-- paused queue jobs remain queued until resumed
+- jobs inside a paused queue remain queued until resumed
 
 ## Monitoring
 - queue stats
@@ -159,81 +159,110 @@ relay-working-mvp-submission/
 │
 ├── packages/
 │   ├── db/          # prisma schema, migrations, seed, db client
-│   ├── config/      # env config
+│   ├── config/      # environment config
 │   └── shared/      # shared helpers and retry logic
 │
 ├── package.json
 └── README.md
-Job flow in this project
+```
+
+---
+
+# Job flow in this project
 
 A job usually goes through the following states:
 
-1. QUEUED
+## 1. QUEUED
+Job is created and waiting in the queue.
 
-Job is created and waiting in queue.
+## 2. CLAIMED
+Worker has picked the job from the queue.
 
-2. CLAIMED
+## 3. RUNNING
+Worker is currently executing the job handler.
 
-Worker has picked the job.
-
-3. RUNNING
-
-Worker is currently executing it.
-
-4. COMPLETED
-
+## 4. COMPLETED
 Job finished successfully.
 
-5. DEAD_LETTER
+## 5. DEAD_LETTER
+Job failed multiple times and has been moved to the dead-letter queue.
 
-Job failed multiple times and has been moved to dead-letter queue.
+---
 
-High level working
-A job is created from API or frontend.
-Job is stored in database with status QUEUED.
-Worker keeps polling active queues.
-Worker claims a job and marks it CLAIMED / RUNNING.
-Worker runs the correct handler depending on job type.
-If success -> job becomes COMPLETED
-If failure:
-retry if attempts are left
-otherwise move to DEAD_LETTER
-Simple architecture
-Basic ER relation idea
-One Project can have many Queues
-One Queue can have many Jobs
-One Queue can use one RetryPolicy
-One Job can have many JobExecutions
-One Job can move to DeadLetterJob
-One Worker can execute many jobs
-API routes used
-Auth
-POST /api/v1/auth/login
-Projects / queues
-GET /api/v1/projects
-GET /api/v1/projects/:projectId/queues
-Jobs
-POST /api/v1/queues/:queueId/jobs
-GET /api/v1/queues/:queueId/jobs
-Queue actions
-GET /api/v1/queues/:queueId/stats
-POST /api/v1/queues/:queueId/pause
-POST /api/v1/queues/:queueId/resume
-Workers
-GET /api/v1/workers
-Dead-letter
-GET /api/v1/dead-letter
-POST /api/v1/dead-letter/:deadLetterId/requeue
-How to run locally
-1. Clone the project
-git clone <your-repo-url>
+# High level working
+
+The high-level flow of the system is:
+
+1. A job is created from API or frontend.
+2. The job is stored in the database with status `QUEUED`.
+3. Worker keeps polling active queues.
+4. Worker claims a ready job and marks it `CLAIMED` / `RUNNING`.
+5. Worker executes the correct handler depending on job type.
+6. If execution succeeds, job becomes `COMPLETED`.
+7. If execution fails:
+   - retry if attempts are left
+   - otherwise move it to `DEAD_LETTER`
+
+---
+
+# Basic database relation idea
+
+- One **Project** can have many **Queues**
+- One **Queue** can have many **Jobs**
+- One **Queue** can use one **RetryPolicy**
+- One **Job** can have many **JobExecutions**
+- One **Job** can move to **DeadLetterJob**
+- One **Worker** can execute many jobs
+
+---
+
+# API routes used
+
+## Auth
+- `POST /api/v1/auth/login`
+
+## Projects / queues
+- `GET /api/v1/projects`
+- `GET /api/v1/projects/:projectId/queues`
+
+## Jobs
+- `POST /api/v1/queues/:queueId/jobs`
+- `GET /api/v1/queues/:queueId/jobs`
+
+## Queue actions
+- `GET /api/v1/queues/:queueId/stats`
+- `POST /api/v1/queues/:queueId/pause`
+- `POST /api/v1/queues/:queueId/resume`
+
+## Workers
+- `GET /api/v1/workers`
+
+## Dead-letter
+- `GET /api/v1/dead-letter`
+- `POST /api/v1/dead-letter/:deadLetterId/requeue`
+
+---
+
+# How to run locally
+
+## 1. Clone the project
+
+```bash
+git clone https://github.com/prateek-crypto/relay-working-mvp-submission.git
 cd relay-working-mvp-submission
-2. Install dependencies
+```
+
+## 2. Install dependencies
+
+```bash
 npm install
-3. Add .env
+```
 
-Create a root .env file like this:
+## 3. Create root `.env`
 
+Create a `.env` file in the project root with:
+
+```env
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/relay?schema=public"
 JWT_SECRET="change-this-secret"
 JWT_EXPIRES_IN="7d"
@@ -247,199 +276,166 @@ WORKER_CLAIM_BATCH_SIZE=5
 WORKER_LEASE_SECONDS=30
 
 VITE_API_BASE_URL="http://localhost:4000/api/v1"
-Database setup
-Generate Prisma client
+```
+
+## 4. Make sure PostgreSQL is running
+
+The project depends on PostgreSQL.  
+Make sure a database named `relay` exists and your credentials match the `.env`.
+
+Current database config used in this project:
+
+- database name: `relay`
+- username: `postgres`
+- password: `postgres`
+
+## 5. Generate Prisma client
+
+```bash
 npm run prisma:generate
-Run migration
+```
+
+## 6. Run migration
+
+```bash
 npm run prisma:migrate
-Seed data
+```
+
+## 7. Seed demo data
+
+```bash
 npm run seed
+```
 
 This creates demo data like:
+- demo user
+- demo project
+- demo queues
+- retry policy
 
-demo user
-demo project
-demo queues
-retry policy
-Run the project
-Start API
+---
+
+# Starting the project
+
+The project has 3 running parts:
+
+- API
+- Worker
+- Frontend
+
+## Recommended way: open 3 terminals
+
+### Terminal 1 — Start API
+
+```bash
 npm run dev:api
-Start worker
+```
+
+This starts the backend API on:
+
+```txt
+http://localhost:4000
+```
+
+### Terminal 2 — Start Worker
+
+```bash
 npm run dev:worker
-Start frontend
-npm run dev:web
-Start all together
-npm run dev
-Demo flows tested
-
-I tested these flows in the project:
-
-1. Login
-logged in with demo user
-got JWT token
-used token in protected routes
-2. Send-email job
-created send-email job
-worker picked it
-job completed successfully
-3. Generate-report job
-created generate-report job
-worker processed it successfully
-4. Fail-demo retry flow
-created fail-demo job
-worker retried it
-after max attempts it moved to dead-letter
-5. Dead-letter requeue
-requeued a dead-letter job
-worker picked it again
-6. Pause / resume queue
-paused queue
-created job while paused
-job stayed queued
-resumed queue
-worker processed it after resume
-
-Recommended way to run during testing
-
-Open 3 terminals in the project root.
-1)**.npm run dev:api
-2).npm run dev:worker
-3).npm run dev:web**
-
-This makes it easier to see:
-API logs
-worker logs
-frontend separately
-API runs on **http://localhost:4000**
-**for running all together 
-# npm run dev**
-First start PostgreSQL
-
-Your whole project depends on the database.
-
-Make sure PostgreSQL is running and that the database relay exists.
-
-Your .env currently uses:
-
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/relay?schema=public"
-
-So the required DB is:
-
-database name → relay
-user → postgres
-password → postgres
-2) Install dependencies once
-
-If not already done:
-
-npm install
-
-You only need this when setting up the project or after dependency changes.
-
-3) Make sure .env exists in project root
-
-Root .env should contain:
-
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/relay?schema=public"
-JWT_SECRET="change-this-secret"
-JWT_EXPIRES_IN="7d"
-API_PORT=4000
-NODE_ENV=development
-WORKER_NAME="worker-1"
-WORKER_POLL_INTERVAL_MS=3000
-WORKER_HEARTBEAT_INTERVAL_MS=8000
-WORKER_CLAIM_BATCH_SIZE=5
-WORKER_LEASE_SECONDS=30
-VITE_API_BASE_URL="http://localhost:4000/api/v1"
-4) Generate Prisma client
-
-Run once after fresh setup or schema changes:
-
-npm run prisma:generate
-5) Run database migration
-
-If DB is fresh / not set up yet:
-
-npm run prisma:migrate
-6) Seed the database
-
-This creates demo user, project, queues, retry policy etc.
-
-npm run seed
-7) Now start the actual project
-
-Your project has 3 running parts:
-
-API
-Worker
-Frontend
-Recommended way: 3 separate terminals
-Terminal 1 — Start API
-
-Open a new PowerShell window:
-
-cd "C:\Users\LENOVO\OneDrive\Desktop\relay-working-mvp-submission"
-npm run dev:api
-
-This starts the backend API on port 4000.
-
-Terminal 2 — Start Worker
-
-Open another PowerShell window:
-
-cd "C:\Users\LENOVO\OneDrive\Desktop\relay-working-mvp-submission"
-npm run dev:worker
+```
 
 This starts the background worker that processes jobs.
 
-When it works, you’ll see logs like:
+When it is working, you will see logs like:
 
+```txt
 [worker] started: worker-1
 [worker] claimed 1 job(s) ...
 [worker] executing job ...
 [worker] job completed ...
-Terminal 3 — Start Frontend
+```
 
-Open another PowerShell window:
+### Terminal 3 — Start Frontend
 
-cd "C:\Users\LENOVO\OneDrive\Desktop\relay-working-mvp-submission"
+```bash
 npm run dev:web
+```
 
 This starts the React dashboard, usually on:
 
-http://localhost:5173
-8) Login and use project
-
-Once API + Worker + Web are all running:
-
-Open frontend in browser
-
-Usually:
-
-```
+```txt
 http://localhost:5173
 ```
-Then login using seeded demo credentials
 
-Use the demo account you seeded earlier.
+---
 
-After login you can:
+# Run all together
 
-view queues
-create send-email job
-create generate-report job
-create fail-demo job
-see workers
-see dead-letter jobs
-pause/resume queue
-requeue dead-letter jobs
+If you want to run all three together in one command:
 
-
-
-
+```bash
+npm run dev
 ```
-# ## Architecture Diagram
-```
+
+---
+
+# Demo login / testing
+
+Once API + Worker + Web are running:
+
+1. Open the frontend in browser:
+   - `http://localhost:5173`
+
+2. Login using the seeded demo user.
+
+3. From the dashboard you can:
+   - view queues
+   - create `send-email` job
+   - create `generate-report` job
+   - create `fail-demo` job
+   - see workers
+   - see dead-letter jobs
+   - pause / resume queue
+   - requeue dead-letter jobs
+
+---
+
+# Demo flows tested
+
+I tested the following flows in this project:
+
+## 1. Login
+- logged in with demo user
+- received JWT token
+- used token in protected routes
+
+## 2. Send-email job
+- created a `send-email` job
+- worker picked it
+- job completed successfully
+
+## 3. Generate-report job
+- created a `generate-report` job
+- worker processed it successfully
+
+## 4. Fail-demo retry flow
+- created a `fail-demo` job
+- worker retried it
+- after max attempts it moved to dead-letter
+
+## 5. Dead-letter requeue
+- requeued a dead-letter job
+- worker picked it again
+
+## 6. Pause / resume queue
+- paused queue
+- created a job while queue was paused
+- job stayed queued
+- resumed queue
+- worker processed it after resume
+
+---
+
+## Architecture Diagram
 
 ```mermaid
 flowchart TB
@@ -451,34 +447,20 @@ flowchart TB
     prisma[Prisma ORM]
 
     user --> web
-    web -->|Login, create jobs, pause/resume queues,<br/>view stats, workers, dead-letter jobs| api
+    web -->|Login, create jobs, view queues, pause/resume queues, requeue dead-letter jobs| api
 
     api --> prisma
     worker --> prisma
     prisma --> db
 
-    api -->|Create job| db
-    api -->|Read queues / jobs / stats| db
-    api -->|Pause / resume queue| db
-    api -->|Requeue dead-letter job| db
-
-    worker -->|Poll active queues| db
-    worker -->|Claim queued jobs| db
-    worker -->|Execute send-email / generate-report / fail-demo| db
-    worker -->|Retry failed jobs| db
-    worker -->|Move exhausted jobs to dead-letter| db
-    worker -->|Heartbeat update| db
-
-
-
-
-```
-  #   ErDiagram
+    api -->|Create job / Fetch data / Queue actions| db
+    worker -->|Poll queues / Claim jobs / Update job state| db
 ```
 
+## ER Diagram
 
-
-
+```mermaid
+erDiagram
     PROJECT ||--o{ QUEUE : contains
     RETRY_POLICY ||--o{ QUEUE : applied_to
     QUEUE ||--o{ JOB : stores
@@ -560,3 +542,4 @@ flowchart TB
         string failureSummary
         datetime createdAt
     }
+```
