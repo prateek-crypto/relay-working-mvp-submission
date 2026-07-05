@@ -16,11 +16,15 @@
     "seed": "npm --workspace @relay/db run seed",
     "build": "npm run build -ws --if-present",
     "lint": "npm run lint -ws --if-present",
-    "test": "npm run test -ws --if-present"
+    "test": "vitest run"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^26.1.0",
-    "concurrently": "^9.0.1"
+    "concurrently": "^9.0.1",
+    "vitest": "^2.0.5"
+  },
+  "dependencies": {
+    "cron-parser": "^5.6.1"
   }
 }

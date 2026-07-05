@@ -19,6 +19,7 @@ enum UserRole {
 
 enum JobStatus {
   QUEUED
+  SCHEDULED
   CLAIMED
   RUNNING
   COMPLETED
@@ -42,6 +43,25 @@ enum ExecutionStatus {
   RUNNING
   SUCCEEDED
   FAILED
+}
+
+enum JobLogLevel {
+  INFO
+  WARN
+  ERROR
+}
+
+enum JobLogEvent {
+  CLAIMED
+  STARTED
+  COMPLETED
+  FAILED
+  RETRY_SCHEDULED
+  DEAD_LETTER
+  SCHEDULED_PROMOTED
+  RECURRING_MATERIALIZED
+  BLOCKED_BY_DEPENDENCY
+  RATE_LIMIT_SKIPPED
 }
 
 //
@@ -87,21 +107,21 @@ model RetryPolicy {
 //
 
 model Queue {
-  id                 String       @id @default(uuid())
+  id                 String   @id @default(uuid())
   projectId          String
   name               String
   description        String?
-  isPaused           Boolean      @default(false)
-  defaultPriority    Int          @default(5)
-  concurrencyLimit   Int          @default(5)
+  isPaused           Boolean  @default(false)
+  defaultPriority    Int      @default(5)
+  concurrencyLimit   Int      @default(5)
   retryPolicyId      String?
   rateLimitCount     Int?
   rateLimitWindowSec Int?
-  createdAt          DateTime     @default(now())
-  updatedAt          DateTime     @updatedAt
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  project       Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  retryPolicy   RetryPolicy?   @relation(fields: [retryPolicyId], references: [id], onDelete: SetNull)
+  project       Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  retryPolicy   RetryPolicy?  @relation(fields: [retryPolicyId], references: [id], onDelete: SetNull)
   jobs          Job[]
   scheduledJobs ScheduledJob[]
 
@@ -114,10 +134,10 @@ model Queue {
 //
 
 model Worker {
-  id              String         @id @default(uuid())
-  workerName      String         @unique
-  status          WorkerStatus   @default(ACTIVE)
-  startedAt       DateTime       @default(now())
+  id              String       @id @default(uuid())
+  workerName      String       @unique
+  status          WorkerStatus @default(ACTIVE)
+  startedAt       DateTime     @default(now())
   lastHeartbeatAt DateTime?
   executions      JobExecution[]
 
@@ -129,45 +149,51 @@ model Worker {
 //
 
 model Job {
-  id                String     @id @default(uuid())
-  queueId           String
-  jobType           String
-  payloadJson       Json
-  status            JobStatus  @default(QUEUED)
-  priority          Int        @default(5)
+  id                   String    @id @default(uuid())
+  queueId              String
+  jobType              String
+  payloadJson          Json
+  status               JobStatus @default(QUEUED)
+  priority             Int       @default(5)
 
   // Retry / scheduling
-  attemptCount      Int        @default(0)
-  maxAttempts       Int        @default(3)
-  availableAt       DateTime   @default(now())
+  attemptCount         Int      @default(0)
+  maxAttempts          Int      @default(3)
+  availableAt          DateTime @default(now())
 
   // Optional batch grouping
-  batchId           String?
+  batchId              String?
+
+  // If created from a recurring scheduled job definition
+  sourceScheduledJobId String?
 
   // Claim / lease metadata
-  claimedByWorkerId String?
-  leaseExpiresAt    DateTime?
-  claimedAt         DateTime?
+  claimedByWorkerId    String?
+  leaseExpiresAt       DateTime?
+  claimedAt            DateTime?
 
   // Completion / failure metadata
-  completedAt       DateTime?
-  lastError         String?
+  completedAt          DateTime?
+  lastError            String?
 
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  queue               Queue             @relation(fields: [queueId], references: [id], onDelete: Cascade)
-  executions          JobExecution[]
-  deadLetter          DeadLetterJob?
+  queue              Queue         @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  executions         JobExecution[]
+  deadLetter         DeadLetterJob?
+  logs               JobLog[]
+  sourceScheduledJob ScheduledJob? @relation(fields: [sourceScheduledJobId], references: [id], onDelete: SetNull)
 
   // Workflow dependency relations
-  parentDependencies  JobDependency[]   @relation("ChildDependencies")
-  childDependencies   JobDependency[]   @relation("ParentDependencies")
+  parentDependencies JobDependency[] @relation("ChildDependencies")
+  childDependencies  JobDependency[] @relation("ParentDependencies")
 
   @@index([queueId, status, availableAt, createdAt])
   @@index([status, availableAt])
   @@index([batchId])
   @@index([claimedByWorkerId])
+  @@index([sourceScheduledJobId])
 }
 
 //
@@ -190,6 +216,25 @@ model JobExecution {
 
   @@index([jobId, attemptNumber])
   @@index([workerId])
+}
+
+//
+// JOB LOGS / OBSERVABILITY
+//
+
+model JobLog {
+  id           String      @id @default(uuid())
+  jobId        String
+  level        JobLogLevel @default(INFO)
+  event        JobLogEvent
+  message      String
+  metadataJson Json?
+  createdAt    DateTime    @default(now())
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
+  @@index([jobId, event, createdAt])
 }
 
 //
@@ -228,22 +273,32 @@ model JobDependency {
 
 //
 // RECURRING / SCHEDULED JOB DEFINITIONS
-// A scheduler loop can materialize actual Job rows from these definitions
+// These definitions are materialized into real Job rows by the worker scheduler loop
 //
 
 model ScheduledJob {
   id             String   @id @default(uuid())
   queueId        String
+  name           String?
   jobType        String
   payloadJson    Json
-  cronExpression String?
-  nextRunAt      DateTime?
-  isPaused       Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  priority       Int      @default(5)
+  maxAttempts    Int      @default(3)
+
+  // cron scheduling
+  cronExpression String
+  timezone       String?
+  nextRunAt      DateTime
+  lastEnqueuedAt DateTime?
+
+  isPaused  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   queue Queue @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  jobs  Job[]
 
   @@index([queueId])
   @@index([nextRunAt])
+  @@index([isPaused, nextRunAt])
 }

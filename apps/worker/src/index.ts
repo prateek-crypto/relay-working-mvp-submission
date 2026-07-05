@@ -2,19 +2,15 @@ import "dotenv/config";
 import { env } from "@relay/config";
 import { prisma } from "@relay/db";
 import { calculateRetryDelayMs, RetryStrategy } from "@relay/shared";
+import { Prisma } from "@prisma/client";
 
 let shuttingDown = false;
 let activeExecutions = 0;
 let workerId = "";
 
-type QueueWithPolicy = Awaited<
-  ReturnType<
-    typeof prisma.queue.findUnique<{
-      where: { id: string };
-      include: { retryPolicy: true };
-    }>
-  >
->;
+type QueueWithPolicy = Prisma.QueueGetPayload<{
+  include: { retryPolicy: true };
+}>;
 
 type ClaimedJob = Array<
   Awaited<ReturnType<typeof prisma.job.findMany>>[number] & {
@@ -22,9 +18,135 @@ type ClaimedJob = Array<
   }
 >[number];
 
-/**
- * Ensure this worker exists in DB and is marked ACTIVE.
- */
+function toInputJson(
+  value: Prisma.JsonValue | null | undefined
+): Prisma.InputJsonValue | undefined {
+  if (value === undefined || value === null) return undefined;
+  return value as Prisma.InputJsonValue;
+}
+
+// Minimal cron next-run calculator for common 5-field cron expressions.
+// Supported examples:
+// */5 * * * *
+// */10 * * * *
+// 0 * * * *
+// 30 14 * * *
+function computeNextRunFromCron(cronExpression: string, from: Date): Date {
+  const parts = cronExpression.trim().split(/\s+/);
+
+  if (parts.length !== 5) {
+    throw new Error(`Unsupported cron format: ${cronExpression}`);
+  }
+
+  const [minutePart, hourPart, dayPart, monthPart, weekdayPart] = parts;
+
+  if (dayPart !== "*" || monthPart !== "*" || weekdayPart !== "*") {
+    throw new Error(
+      `Only wildcard day/month/weekday cron expressions are supported in this MVP: ${cronExpression}`
+    );
+  }
+
+  const base = new Date(from);
+  base.setSeconds(0, 0);
+
+  // */N * * * *
+  if (minutePart.startsWith("*/") && hourPart === "*") {
+    const step = Number(minutePart.slice(2));
+    if (!Number.isFinite(step) || step <= 0) {
+      throw new Error(`Invalid cron step in ${cronExpression}`);
+    }
+
+    const next = new Date(base);
+    next.setMinutes(next.getMinutes() + 1);
+
+    while (next.getMinutes() % step !== 0) {
+      next.setMinutes(next.getMinutes() + 1);
+    }
+
+    next.setSeconds(0, 0);
+    return next;
+  }
+
+  // M * * * *
+  if (/^\d+$/.test(minutePart) && hourPart === "*") {
+    const minute = Number(minutePart);
+    if (minute < 0 || minute > 59) {
+      throw new Error(`Invalid minute in ${cronExpression}`);
+    }
+
+    const next = new Date(base);
+    next.setSeconds(0, 0);
+
+    if (
+      next.getMinutes() < minute ||
+      (next.getMinutes() === minute &&
+        from.getSeconds() === 0 &&
+        from.getMilliseconds() === 0)
+    ) {
+      next.setMinutes(minute, 0, 0);
+      if (next <= from) {
+        next.setHours(next.getHours() + 1);
+        next.setMinutes(minute, 0, 0);
+      }
+    } else {
+      next.setHours(next.getHours() + 1);
+      next.setMinutes(minute, 0, 0);
+    }
+
+    return next;
+  }
+
+  // M H * * *
+  if (/^\d+$/.test(minutePart) && /^\d+$/.test(hourPart)) {
+    const minute = Number(minutePart);
+    const hour = Number(hourPart);
+
+    if (minute < 0 || minute > 59 || hour < 0 || hour > 23) {
+      throw new Error(`Invalid hour/minute in ${cronExpression}`);
+    }
+
+    const next = new Date(base);
+    next.setHours(hour, minute, 0, 0);
+
+    if (next <= from) {
+      next.setDate(next.getDate() + 1);
+      next.setHours(hour, minute, 0, 0);
+    }
+
+    return next;
+  }
+
+  throw new Error(`Unsupported cron expression for MVP: ${cronExpression}`);
+}
+
+async function logJobEvent(params: {
+  jobId: string;
+  event:
+    | "CLAIMED"
+    | "STARTED"
+    | "COMPLETED"
+    | "FAILED"
+    | "RETRY_SCHEDULED"
+    | "DEAD_LETTER"
+    | "SCHEDULED_PROMOTED"
+    | "RECURRING_MATERIALIZED"
+    | "BLOCKED_BY_DEPENDENCY"
+    | "RATE_LIMIT_SKIPPED";
+  level?: "INFO" | "WARN" | "ERROR";
+  message: string;
+  metadata?: Prisma.JsonValue | null;
+}) {
+  await prisma.jobLog.create({
+    data: {
+      jobId: params.jobId,
+      event: params.event,
+      level: params.level ?? "INFO",
+      message: params.message,
+      metadataJson: toInputJson(params.metadata)
+    }
+  });
+}
+
 async function ensureWorker() {
   const existing = await prisma.worker.findUnique({
     where: { workerName: env.WORKER_NAME }
@@ -49,9 +171,6 @@ async function ensureWorker() {
   });
 }
 
-/**
- * Periodic worker heartbeat.
- */
 async function heartbeat() {
   if (!workerId) return;
 
@@ -65,8 +184,129 @@ async function heartbeat() {
 }
 
 /**
- * Recover jobs whose lease expired while in CLAIMED/RUNNING.
+ * Promote one-time scheduled jobs into runnable queue jobs.
+ * SCHEDULED -> QUEUED when availableAt becomes due.
  */
+async function promoteScheduledJobs() {
+  const now = new Date();
+
+  const scheduledJobs = await prisma.job.findMany({
+    where: {
+      status: "SCHEDULED",
+      availableAt: { lte: now }
+    }
+  });
+
+  if (!scheduledJobs.length) return;
+
+  for (const job of scheduledJobs) {
+    await prisma.job.update({
+      where: { id: job.id },
+      data: { status: "QUEUED" }
+    });
+
+    await logJobEvent({
+      jobId: job.id,
+      event: "SCHEDULED_PROMOTED",
+      level: "INFO",
+      message: "Scheduled job became due and was promoted to QUEUED",
+      metadata: {
+        previousStatus: "SCHEDULED",
+        newStatus: "QUEUED",
+        availableAt: job.availableAt.toISOString()
+      }
+    });
+  }
+
+  console.log(
+    `[worker] promoted ${scheduledJobs.length} scheduled job(s) to QUEUED`
+  );
+}
+
+/**
+ * Materialize recurring ScheduledJob definitions into runnable Job rows.
+ *
+ * Catch-up policy:
+ * - if a recurring schedule is overdue, enqueue exactly one runnable job now
+ * - then move nextRunAt forward until it becomes future-facing
+ * - do not enqueue every missed interval after downtime
+ */
+async function materializeRecurringJobs() {
+  const now = new Date();
+
+  const dueSchedules = await prisma.scheduledJob.findMany({
+    where: {
+      isPaused: false,
+      nextRunAt: { lte: now }
+    },
+    orderBy: { nextRunAt: "asc" }
+  });
+
+  if (!dueSchedules.length) return;
+
+  for (const schedule of dueSchedules) {
+    const createdJob = await prisma.job.create({
+      data: {
+        queueId: schedule.queueId,
+        jobType: schedule.jobType,
+        payloadJson: toInputJson(schedule.payloadJson) ?? {},
+        status: "QUEUED",
+        priority: schedule.priority,
+        attemptCount: 0,
+        maxAttempts: schedule.maxAttempts,
+        availableAt: new Date(),
+        sourceScheduledJobId: schedule.id
+      }
+    });
+
+    let nextRunAt = schedule.nextRunAt;
+
+    try {
+      do {
+        nextRunAt = computeNextRunFromCron(
+          schedule.cronExpression,
+          nextRunAt
+        );
+      } while (nextRunAt <= now);
+    } catch (err) {
+      console.error(
+        `[worker] failed to compute next cron run for schedule ${schedule.id}:`,
+        err
+      );
+
+      // safe fallback so the schedule does not get stuck forever
+      nextRunAt = new Date(Date.now() + 5 * 60 * 1000);
+    }
+
+    await prisma.scheduledJob.update({
+      where: { id: schedule.id },
+      data: {
+        lastEnqueuedAt: now,
+        nextRunAt
+      }
+    });
+
+    await logJobEvent({
+      jobId: createdJob.id,
+      event: "RECURRING_MATERIALIZED",
+      level: "INFO",
+      message: "Recurring schedule materialized into a runnable job",
+      metadata: {
+        scheduledJobId: schedule.id,
+        scheduleName: schedule.name,
+        cronExpression: schedule.cronExpression,
+        previousNextRunAt: schedule.nextRunAt.toISOString(),
+        nextRunAt: nextRunAt.toISOString(),
+        catchUpPolicy: "skip_backlog_enqueue_only_one_due_run"
+      }
+    });
+
+    console.log(
+      `[worker] materialized recurring job from schedule ${schedule.id} -> next run at ${nextRunAt.toISOString()}`
+    );
+  }
+}
+
 async function recoverExpiredLeases() {
   const result = await prisma.job.updateMany({
     where: {
@@ -87,8 +327,91 @@ async function recoverExpiredLeases() {
 }
 
 /**
- * Claim ready jobs from a queue.
+ * Check whether a job is runnable based on workflow dependencies.
+ * A child job can run only if all parent jobs are COMPLETED.
  */
+async function canRunJob(jobId: string): Promise<{
+  ok: boolean;
+  blockedParentIds: string[];
+}> {
+  const deps = await prisma.jobDependency.findMany({
+    where: { childJobId: jobId },
+    include: {
+      parentJob: {
+        select: {
+          id: true,
+          status: true
+        }
+      }
+    }
+  });
+
+  if (!deps.length) {
+    return { ok: true, blockedParentIds: [] };
+  }
+
+  const blockedParentIds = deps
+    .filter((dep) => dep.parentJob.status !== "COMPLETED")
+    .map((dep) => dep.parentJob.id);
+
+  return {
+    ok: blockedParentIds.length === 0,
+    blockedParentIds
+  };
+}
+
+/**
+ * Compute how many jobs may be claimed from a queue after applying queue-level rate limits.
+ * If no rate limit is configured, returns the concurrency-based capacity unchanged.
+ */
+async function computeRateLimitedCapacity(
+  queue: NonNullable<QueueWithPolicy>,
+  baseCapacity: number
+): Promise<{
+  allowedCapacity: number;
+  rateLimitApplied: boolean;
+  usedInWindow: number;
+}> {
+  if (
+    !queue.rateLimitCount ||
+    !queue.rateLimitWindowSec ||
+    queue.rateLimitCount <= 0 ||
+    queue.rateLimitWindowSec <= 0
+  ) {
+    return {
+      allowedCapacity: baseCapacity,
+      rateLimitApplied: false,
+      usedInWindow: 0
+    };
+  }
+
+  const windowStart = new Date(
+    Date.now() - queue.rateLimitWindowSec * 1000
+  );
+
+  const usedInWindow = await prisma.jobExecution.count({
+    where: {
+      job: {
+        queueId: queue.id
+      },
+      startedAt: {
+        gte: windowStart
+      }
+    }
+  });
+
+  const remainingRateCapacity = Math.max(
+    0,
+    queue.rateLimitCount - usedInWindow
+  );
+
+  return {
+    allowedCapacity: Math.min(baseCapacity, remainingRateCapacity),
+    rateLimitApplied: true,
+    usedInWindow
+  };
+}
+
 async function claimJobs(queueId: string): Promise<ClaimedJob[]> {
   const now = new Date();
 
@@ -101,6 +424,39 @@ async function claimJobs(queueId: string): Promise<ClaimedJob[]> {
     return [];
   }
 
+  const currentlyActive = await prisma.job.count({
+    where: {
+      queueId,
+      status: { in: ["CLAIMED", "RUNNING"] }
+    }
+  });
+
+  const remainingConcurrencyCapacity = Math.max(
+    0,
+    queue.concurrencyLimit - currentlyActive
+  );
+
+  if (remainingConcurrencyCapacity <= 0) {
+    return [];
+  }
+
+  const rateLimited = await computeRateLimitedCapacity(
+    queue,
+    remainingConcurrencyCapacity
+  );
+
+  if (rateLimited.allowedCapacity <= 0) {
+    console.log(
+      `[worker] queue ${queueId} skipped due to rate limit (used=${rateLimited.usedInWindow}/${queue.rateLimitCount} in ${queue.rateLimitWindowSec}s window)`
+    );
+    return [];
+  }
+
+  const takeCount = Math.min(
+    rateLimited.allowedCapacity,
+    env.WORKER_CLAIM_BATCH_SIZE
+  );
+
   const jobs = await prisma.job.findMany({
     where: {
       queueId,
@@ -108,12 +464,30 @@ async function claimJobs(queueId: string): Promise<ClaimedJob[]> {
       availableAt: { lte: now }
     },
     orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
-    take: env.WORKER_CLAIM_BATCH_SIZE
+    take: takeCount * 3 // fetch extra so blocked dependency jobs don't waste the batch
   });
 
   const claimed: ClaimedJob[] = [];
 
   for (const job of jobs) {
+    if (claimed.length >= takeCount) {
+      break;
+    }
+
+    const dependencyCheck = await canRunJob(job.id);
+    if (!dependencyCheck.ok) {
+      await logJobEvent({
+        jobId: job.id,
+        event: "BLOCKED_BY_DEPENDENCY",
+        level: "WARN",
+        message: "Job is waiting for parent dependency completion",
+        metadata: {
+          blockedParentIds: dependencyCheck.blockedParentIds
+        }
+      });
+      continue;
+    }
+
     const updated = await prisma.job.updateMany({
       where: {
         id: job.id,
@@ -132,23 +506,35 @@ async function claimJobs(queueId: string): Promise<ClaimedJob[]> {
         ...job,
         queue
       });
+
+      await logJobEvent({
+        jobId: job.id,
+        event: "CLAIMED",
+        level: "INFO",
+        message: `Job claimed by worker ${env.WORKER_NAME}`,
+        metadata: {
+          workerId,
+          workerName: env.WORKER_NAME,
+          queueId,
+          claimedAt: now.toISOString()
+        }
+      });
     }
   }
 
   if (claimed.length > 0) {
     console.log(
-      `[worker] claimed ${claimed.length} job(s) from queue ${queueId}: ${claimed
-        .map((j) => j.id)
-        .join(", ")}`
+      `[worker] claimed ${claimed.length} job(s) from queue ${queueId} (active=${currentlyActive}, limit=${queue.concurrencyLimit}${
+        rateLimited.rateLimitApplied
+          ? `, rateUsed=${rateLimited.usedInWindow}/${queue.rateLimitCount}`
+          : ""
+      }): ${claimed.map((j) => j.id).join(", ")}`
     );
   }
 
   return claimed;
 }
 
-/**
- * Demo handler.
- */
 async function runHandler(job: { id: string; jobType: string }) {
   switch (job.jobType) {
     case "send-email":
@@ -168,12 +554,10 @@ async function runHandler(job: { id: string; jobType: string }) {
   }
 }
 
-/**
- * Execute one claimed job.
- */
 async function executeJob(job: ClaimedJob) {
   activeExecutions += 1;
   const attempt = job.attemptCount + 1;
+  const startedAt = new Date();
 
   console.log(
     `[worker] executing job ${job.id} | type=${job.jobType} | attempt=${attempt}`
@@ -192,7 +576,7 @@ async function executeJob(job: ClaimedJob) {
         workerId,
         attemptNumber: attempt,
         status: "RUNNING",
-        startedAt: new Date()
+        startedAt
       }
     });
 
@@ -204,13 +588,34 @@ async function executeJob(job: ClaimedJob) {
       }
     });
 
+    await logJobEvent({
+      jobId: job.id,
+      event: "STARTED",
+      level: "INFO",
+      message: `Job execution started (attempt ${attempt})`,
+      metadata: {
+        workerId,
+        workerName: env.WORKER_NAME,
+        attempt,
+        startedAt: startedAt.toISOString()
+      }
+    });
+
     await runHandler(job);
+
+    const finishedAt = new Date();
+    const durationMs = finishedAt.getTime() - startedAt.getTime();
+
+    if (!execution) {
+      throw new Error(`Execution row missing for job ${job.id}`);
+    }
 
     await prisma.jobExecution.update({
       where: { id: execution.id },
       data: {
         status: "SUCCEEDED",
-        finishedAt: new Date(),
+        finishedAt,
+        durationMs,
         errorMessage: null
       }
     });
@@ -219,11 +624,25 @@ async function executeJob(job: ClaimedJob) {
       where: { id: job.id },
       data: {
         status: "COMPLETED",
-        completedAt: new Date(),
+        completedAt: finishedAt,
         lastError: null,
         leaseExpiresAt: null,
         claimedByWorkerId: null,
         claimedAt: null
+      }
+    });
+
+    await logJobEvent({
+      jobId: job.id,
+      event: "COMPLETED",
+      level: "INFO",
+      message: `Job completed successfully in ${durationMs} ms`,
+      metadata: {
+        workerId,
+        workerName: env.WORKER_NAME,
+        attempt,
+        durationMs,
+        completedAt: finishedAt.toISOString()
       }
     });
 
@@ -232,6 +651,9 @@ async function executeJob(job: ClaimedJob) {
     const errorMessage =
       err instanceof Error ? err.message : "Unknown worker execution error";
 
+    const finishedAt = new Date();
+    const durationMs = finishedAt.getTime() - startedAt.getTime();
+
     console.error(`[worker] job failed: ${job.id} | ${errorMessage}`);
 
     if (execution) {
@@ -239,11 +661,27 @@ async function executeJob(job: ClaimedJob) {
         where: { id: execution.id },
         data: {
           status: "FAILED",
-          finishedAt: new Date(),
+          finishedAt,
+          durationMs,
           errorMessage
         }
       });
     }
+
+    await logJobEvent({
+      jobId: job.id,
+      event: "FAILED",
+      level: "ERROR",
+      message: `Job execution failed on attempt ${attempt}: ${errorMessage}`,
+      metadata: {
+        workerId,
+        workerName: env.WORKER_NAME,
+        attempt,
+        durationMs,
+        errorMessage,
+        failedAt: finishedAt.toISOString()
+      }
+    });
 
     let policy = null;
     if (job.queue?.retryPolicyId) {
@@ -279,6 +717,20 @@ async function executeJob(job: ClaimedJob) {
         }
       });
 
+      await logJobEvent({
+        jobId: job.id,
+        event: "DEAD_LETTER",
+        level: "ERROR",
+        message: `Job moved to dead letter after attempt ${attempt}`,
+        metadata: {
+          workerId,
+          workerName: env.WORKER_NAME,
+          attempt,
+          maxAttempts,
+          errorMessage
+        }
+      });
+
       console.log(`[worker] job moved to DEAD_LETTER: ${job.id}`);
     } else {
       const delay = calculateRetryDelayMs(
@@ -300,18 +752,33 @@ async function executeJob(job: ClaimedJob) {
           claimedAt: null
         }
       });
+
+      await logJobEvent({
+        jobId: job.id,
+        event: "RETRY_SCHEDULED",
+        level: "WARN",
+        message: `Retry scheduled for attempt ${attempt + 1}`,
+        metadata: {
+          workerId,
+          workerName: env.WORKER_NAME,
+          attempt,
+          nextAttempt: attempt + 1,
+          nextAvailableAt: nextAvailableAt.toISOString(),
+          delayMs: delay,
+          errorMessage
+        }
+      });
     }
   } finally {
     activeExecutions -= 1;
   }
 }
 
-/**
- * One poll cycle.
- */
 async function poll() {
   if (shuttingDown) return;
 
+  await promoteScheduledJobs();
+  await materializeRecurringJobs();
   await recoverExpiredLeases();
 
   const queues = await prisma.queue.findMany({
@@ -328,9 +795,6 @@ async function poll() {
   }
 }
 
-/**
- * Graceful shutdown.
- */
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -367,9 +831,6 @@ async function shutdown(signal: string) {
   }
 }
 
-/**
- * Main boot flow.
- */
 async function main() {
   const worker = await ensureWorker();
   workerId = worker.id;
