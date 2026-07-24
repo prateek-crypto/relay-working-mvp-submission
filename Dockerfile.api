@@ -1,7 +1,7 @@
 # =========================
 # Build stage
 # =========================
-FROM node:20-alpine AS builder
+FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
@@ -12,19 +12,19 @@ COPY package.json package-lock.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 
-# Install all dependencies
+# Install dependencies
 RUN npm ci
 
 # Generate Prisma Client
 RUN npm run prisma:generate
 
-# Verify the API compiles
+# Verify TypeScript compilation
 RUN npm run build -w @relay/api
 
 # =========================
 # Runtime stage
 # =========================
-FROM node:20-alpine
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
@@ -33,14 +33,14 @@ ENV NODE_ENV=production
 # Copy package manifests
 COPY package.json package-lock.json ./
 
-# Copy source
+# Copy workspace source
 COPY packages ./packages
 COPY apps/api ./apps/api
 
 # Install production dependencies
 RUN npm ci --omit=dev
 
-# Copy node_modules generated during build
+# Copy installed node_modules from builder
 COPY --from=builder /app/node_modules ./node_modules
 
 # Generate Prisma Client
@@ -48,5 +48,5 @@ RUN npm run prisma:generate
 
 EXPOSE 4000
 
-# Start the API using tsx
-CMD ["npx", "tsx", "apps/api/src/server.ts"]
+# Render provides PORT automatically
+CMD ["node", "--import", "tsx", "apps/api/src/server.ts"]
