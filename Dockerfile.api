@@ -5,10 +5,10 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy root package files
+# Copy package manifests
 COPY package.json package-lock.json ./
 
-# Copy workspaces
+# Copy workspace source
 COPY packages ./packages
 COPY apps/api ./apps/api
 
@@ -18,7 +18,7 @@ RUN npm ci
 # Generate Prisma Client
 RUN npm run prisma:generate
 
-# Optional: Verify TypeScript compilation
+# Verify the API compiles
 RUN npm run build -w @relay/api
 
 # =========================
@@ -33,19 +33,20 @@ ENV NODE_ENV=production
 # Copy package manifests
 COPY package.json package-lock.json ./
 
-# Copy workspace source
+# Copy source
 COPY packages ./packages
 COPY apps/api ./apps/api
 
 # Install production dependencies
 RUN npm ci --omit=dev
 
+# Copy node_modules generated during build
+COPY --from=builder /app/node_modules ./node_modules
+
 # Generate Prisma Client
 RUN npm run prisma:generate
 
-# Copy installed node_modules from builder
-COPY --from=builder /app/node_modules ./node_modules
-
 EXPOSE 4000
 
-CMD ["node", "-r", "tsx/cjs", "apps/api/src/server.ts"]
+# Start the API using tsx
+CMD ["npx", "tsx", "apps/api/src/server.ts"]
