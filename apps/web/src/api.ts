@@ -1,4 +1,6 @@
-const API = "http://localhost:4000/api/v1";
+const API =
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://localhost:4000/api/v1";
 
 type ApiError = {
   error: string;
@@ -9,6 +11,7 @@ async function parseJson(res: Response) {
   const text = await res.text();
 
   let data: any = {};
+
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
@@ -30,7 +33,9 @@ export async function loginDemo() {
   try {
     const res = await fetch(`${API}/auth/login`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json"
+      },
       body: JSON.stringify({
         email: "demo@relay.dev",
         password: "password123"
@@ -38,6 +43,7 @@ export async function loginDemo() {
     });
 
     return await parseJson(res);
+
   } catch (error: any) {
     return {
       error: error?.message || "Unable to connect to API"
@@ -54,6 +60,7 @@ export async function apiGet(path: string, token: string) {
     });
 
     return await parseJson(res);
+
   } catch (error: any) {
     return {
       error: error?.message || "GET request failed"
@@ -61,7 +68,11 @@ export async function apiGet(path: string, token: string) {
   }
 }
 
-export async function apiPost(path: string, token: string, body?: unknown) {
+export async function apiPost(
+  path: string,
+  token: string,
+  body?: unknown
+) {
   try {
     const res = await fetch(`${API}${path}`, {
       method: "POST",
@@ -69,10 +80,14 @@ export async function apiPost(path: string, token: string, body?: unknown) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined
+      body:
+        body !== undefined
+          ? JSON.stringify(body)
+          : undefined
     });
 
     return await parseJson(res);
+
   } catch (error: any) {
     return {
       error: error?.message || "POST request failed"
@@ -80,7 +95,11 @@ export async function apiPost(path: string, token: string, body?: unknown) {
   }
 }
 
-export async function apiPatch(path: string, token: string, body?: unknown) {
+export async function apiPatch(
+  path: string,
+  token: string,
+  body?: unknown
+) {
   try {
     const res = await fetch(`${API}${path}`, {
       method: "PATCH",
@@ -88,10 +107,14 @@ export async function apiPatch(path: string, token: string, body?: unknown) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined
+      body:
+        body !== undefined
+          ? JSON.stringify(body)
+          : undefined
     });
 
     return await parseJson(res);
+
   } catch (error: any) {
     return {
       error: error?.message || "PATCH request failed"
@@ -99,7 +122,10 @@ export async function apiPatch(path: string, token: string, body?: unknown) {
   }
 }
 
-export async function apiDelete(path: string, token: string) {
+export async function apiDelete(
+  path: string,
+  token: string
+) {
   try {
     const res = await fetch(`${API}${path}`, {
       method: "DELETE",
@@ -109,6 +135,7 @@ export async function apiDelete(path: string, token: string) {
     });
 
     return await parseJson(res);
+
   } catch (error: any) {
     return {
       error: error?.message || "DELETE request failed"
