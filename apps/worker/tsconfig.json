@@ -3,17 +3,33 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+
+    "outDir": "dist",
+
     "strict": true,
     "noImplicitAny": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": ["node"],
+
     "baseUrl": ".",
     "paths": {
-      "@relay/db": ["../../packages/db/src/index.ts"],
-      "@relay/config": ["../../packages/config/src/index.ts"],
-      "@relay/shared": ["../../packages/shared/src/index.ts"]
+      "@relay/db": [
+        "../../packages/db/src/index.ts"
+      ],
+      "@relay/config": [
+        "../../packages/config/src/index.ts"
+      ],
+      "@relay/shared": [
+        "../../packages/shared/src/index.ts"
+      ]
     }
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }
