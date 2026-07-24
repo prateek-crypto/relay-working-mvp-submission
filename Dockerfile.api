@@ -5,7 +5,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy root package files
+# Copy package manifests
 COPY package.json package-lock.json ./
 
 # Copy workspaces
@@ -14,16 +14,6 @@ COPY apps/api ./apps/api
 
 # Install all dependencies
 RUN npm ci
-
-# -------------------------
-# Diagnostics
-# -------------------------
-RUN node -v
-RUN npm -v
-RUN npx tsc -v
-RUN npm ls typescript
-RUN echo "========== API tsconfig =========="
-RUN cat apps/api/tsconfig.json
 
 # Generate Prisma Client
 RUN npm run prisma:generate
@@ -40,25 +30,26 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy package files
+# Copy package manifests
 COPY package.json package-lock.json ./
 
-# Copy workspaces
+# Copy workspace source required at runtime
 COPY packages ./packages
-COPY apps/api ./apps/api
+COPY apps/api/package.json ./apps/api/package.json
 
-# Install production dependencies
+# Install production dependencies only
 RUN npm ci --omit=dev
 
 # Generate Prisma Client
 RUN npm run prisma:generate
 
-# Copy built dependencies
-COPY --from=builder /app/node_modules ./node_modules
+# Copy compiled API
+COPY --from=builder /app/apps/api/dist ./apps/api/dist
 
-# Copy API source
-COPY --from=builder /app/apps/api/src ./apps/api/src
+# Copy generated Prisma client
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
 EXPOSE 4000
 
-CMD ["node", "-r", "tsx/cjs", "apps/api/src/server.ts"]
+CMD ["node", "apps/api/dist/server.js"]
