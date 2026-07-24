@@ -15,7 +15,13 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-
+app.get("/", (_req: Request, res: Response) => {
+  res.json({
+    service: "Relay API",
+    status: "running",
+    version: "1.0.0"
+  });
+});
 type JwtUser = {
   userId: string;
   email: string;
