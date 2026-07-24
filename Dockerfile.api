@@ -1,52 +1,39 @@
-# =========================
-# Build stage
-# =========================
 FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
-# Copy package manifests
-COPY package.json package-lock.json ./
+RUN apt-get update && \
+    apt-get install -y openssl && \
+    rm -rf /var/lib/apt/lists/*
 
-# Copy workspace source
+COPY package.json package-lock.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 
-# Install dependencies
 RUN npm ci
-
-# Generate Prisma Client
 RUN npm run prisma:generate
-
-# Verify TypeScript compilation
 RUN npm run build -w @relay/api
 
-# =========================
-# Runtime stage
-# =========================
 FROM node:20-bookworm-slim
 
 WORKDIR /app
 
+RUN apt-get update && \
+    apt-get install -y openssl && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 
-# Copy package manifests
 COPY package.json package-lock.json ./
-
-# Copy workspace source
 COPY packages ./packages
 COPY apps/api ./apps/api
 
-# Install production dependencies
 RUN npm ci --omit=dev
 
-# Copy installed node_modules from builder
 COPY --from=builder /app/node_modules ./node_modules
 
-# Generate Prisma Client
 RUN npm run prisma:generate
 
 EXPOSE 4000
 
-# Render provides PORT automatically
 CMD ["node", "--import", "tsx", "apps/api/src/server.ts"]
