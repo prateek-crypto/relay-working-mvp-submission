@@ -2,9 +2,18 @@
   "name": "@relay/worker",
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "dev": "tsx watch src/index.ts" },
-  "dependencies": {
-    "@relay/config":"*","@relay/db":"*","@relay/shared":"*","dotenv":"^16.4.5"
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc"
   },
-  "devDependencies": { "tsx":"^4.19.1","typescript":"^5.5.4" }
+  "dependencies": {
+    "@relay/config": "*",
+    "@relay/db": "*",
+    "@relay/shared": "*",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4"
+  }
 }
