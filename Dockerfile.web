@@ -1,0 +1,32 @@
+# Build stage
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy root package files
+COPY package.json package-lock.json ./
+
+# Copy workspace packages
+COPY packages ./packages
+COPY apps/web ./apps/web
+
+# Install dependencies
+RUN npm ci
+
+# Build web
+RUN npm run build -w @relay/web
+
+# Runtime stage - serve with lightweight server
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install serve to run the built app
+RUN npm install -g serve
+
+# Copy built artifacts from builder
+COPY --from=builder /app/apps/web/dist ./dist
+
+EXPOSE 5173
+
+CMD ["serve", "-s", "dist", "-l", "5173"]

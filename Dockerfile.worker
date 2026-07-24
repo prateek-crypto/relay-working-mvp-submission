@@ -1,0 +1,41 @@
+# Build stage
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Copy root package files
+COPY package.json package-lock.json ./
+
+# Copy workspace packages
+COPY packages ./packages
+COPY apps/worker ./apps/worker
+
+# Install dependencies
+RUN npm ci
+
+# Generate Prisma client
+RUN npm run prisma:generate
+
+# Build worker
+RUN npm run build -w @relay/worker
+
+# Runtime stage
+FROM node:20-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Install only production dependencies
+COPY package.json package-lock.json ./
+COPY packages ./packages
+COPY apps/worker ./apps/worker
+
+RUN npm ci --omit=dev && \
+    npm run prisma:generate
+
+# Copy built application from builder
+COPY --from=builder /app/apps/worker/src ./apps/worker/src
+COPY --from=builder /app/node_modules ./node_modules
+
+CMD ["node", "-r", "tsx/cjs", "apps/worker/src/index.ts"]

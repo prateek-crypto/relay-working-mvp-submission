@@ -1,0 +1,82 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
+      url: ${{ steps.deploy.outputs.deployment_url }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build
+        run: npm run build
+      
+      # Option 1: Deploy to Railway
+      - name: Deploy to Railway
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: railwayapp/deploy-action@v1
+        with:
+          token: ${{ secrets.RAILWAY_TOKEN }}
+          service: relay
+          environment: ${{ github.event.inputs.environment || 'production' }}
+      
+      # Option 2: Deploy to Render (uncomment to use)
+      # - name: Deploy to Render
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   uses: render-org/github-actions-deploy@v1
+      #   with:
+      #     service-id: ${{ secrets.RENDER_SERVICE_ID }}
+      #     api-key: ${{ secrets.RENDER_API_KEY }}
+      #     github-token: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Option 3: Deploy to Fly.io (uncomment to use)
+      # - name: Deploy to Fly.io
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   uses: superfly/flyctl-actions/setup@v1
+      # - name: Deploy app
+      #   run: flyctl deploy --remote-only
+      #   env:
+      #     FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      
+      # Option 4: Deploy to Heroku (uncomment to use)
+      # - name: Deploy to Heroku
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   uses: akhileshns/heroku-deploy@v3.13.15
+      #   with:
+      #     heroku_api_key: ${{ secrets.HEROKU_API_KEY }}
+      #     heroku_app_name: ${{ secrets.HEROKU_APP_NAME }}
+      #     heroku_email: ${{ secrets.HEROKU_EMAIL }}
+      #     buildpack: "heroku/nodejs"
+      
+      - name: Deployment Summary
+        run: |
+          echo "✅ Deployment to ${{ github.event.inputs.environment || 'production' }} completed"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "🌳 Branch: ${{ github.ref_name }}"
