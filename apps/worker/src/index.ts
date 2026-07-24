@@ -683,16 +683,14 @@ async function executeJob(job: ClaimedJob) {
       }
     });
 
-   const policy: Awaited<
-  ReturnType<typeof prisma.retryPolicy.findUnique>
-> =
-  job.queue?.retryPolicyId
-    ? await prisma.retryPolicy.findUnique({
-        where: {
-          id: job.queue.retryPolicyId
-        }
-      })
-    : null;
+   const policy = job.queue?.retryPolicyId
+  ? await prisma.retryPolicy.findUnique({
+      where: {
+        id: job.queue.retryPolicyId,
+      },
+    })
+  : null;
+  
 
     const maxAttempts = policy?.maxAttempts ?? job.maxAttempts ?? 3;
 
