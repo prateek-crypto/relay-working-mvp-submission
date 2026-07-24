@@ -4,9 +4,9 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "noImplicitAny": false,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "ignoreDeprecations": "6.0",
     "types": ["node"],
     "baseUrl": ".",
     "paths": {

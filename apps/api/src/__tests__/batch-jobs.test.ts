@@ -67,7 +67,13 @@ describe("Batch job creation", () => {
     ]);
 
     expect(createdJobs).toHaveLength(3);
-    expect(createdJobs.every((job) => job.batchId === batchId)).toBe(true);
+
+    expect(
+      createdJobs.every(
+        (job: (typeof createdJobs)[number]) => job.batchId === batchId
+      )
+    ).toBe(true);
+
     expect(createdJobs[0].status).toBe("QUEUED");
     expect(createdJobs[1].status).toBe("SCHEDULED");
     expect(createdJobs[2].status).toBe("SCHEDULED");
